@@ -182,7 +182,7 @@ class Wurlitzer(object):
                 for pipe_ in pipes:
                     poller.register(pipe_, select.POLLIN | select.POLLPRI)
                 kq = None
-            elif "kqueue" in dir(select):  # for BSD / macOS
+            elif hasattr(select, "kqueue"):  # for BSD / macOS
                 kq = select.kqueue()
                 events = kq.control([select.kevent(_pipe) for _pipe in pipes],
                                     0, 0)
