@@ -176,13 +176,28 @@ class Wurlitzer(object):
             """Forward bytes on a pipe to stream messages"""
             draining = False
             flush_interval = 0
-            poller = select.poll()
-            for pipe_ in pipes:
-                poller.register(pipe_, select.POLLIN | select.POLLPRI)
+
+            if "poll" in dir(select):
+                poller = select.poll()
+                for pipe_ in pipes:
+                    poller.register(pipe_, select.POLLIN | select.POLLPRI)
+                kq = None
+            elif "kqueue" in dir(select):  # for BSD / macOS
+                kq = select.kqueue()
+                poller = None
+            else:
+                raise NotImplementedError(
+                    "Your system doesn't support nor poll nor kqueue")
 
             while pipes:
-                events = poller.poll(int(flush_interval * 1000))
-                #r = all([(r_[1] == (select.POLLIN | select.POLLPRI)) for r_ in events])
+                if poller:
+                    events = poller.poll(int(flush_interval * 1000))
+                else:
+                    evlist = [select.kevent(_pipe, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT)
+                              if _pipe = self._control_r
+                              else select.kevent(_pipe) for _pipe in pipes]
+                    events = kq.control(evlist, 0, int(flush_interval * 1000))
+
                 if events:
                     # found something to read, don't block select until
                     # we run out of things to read
@@ -200,29 +215,53 @@ class Wurlitzer(object):
                         flush_interval = self.flush_interval
                         continue
 
-                for fd, flags in events:
-                    if fd == self._control_r:
-                        draining = True
-                        pipes.remove(self._control_r)
-                        poller.unregister(self._control_r)
-                        os.close(self._control_r)
-                        continue
-                    name = names[fd]
-                    data = os.read(fd, 1024)
-                    if not data:
-                        # pipe closed, stop polling it
-                        pipes.remove(fd)
-                        poller.unregister(fd)
-                        os.close(fd)
-                    else:
-                        handler = getattr(self, '_handle_%s' % name)
-                        handler(data)
+                if poller:  # poll
+                    for fd, flags in events:
+                        if fd == self._control_r:
+                            draining = True
+                            pipes.remove(self._control_r)
+                            poller.unregister(self._control_r)
+                            os.close(self._control_r)
+                            continue
+                        name = names[fd]
+                        data = os.read(fd, 1024)
+                        if not data:
+                            # pipe closed, stop polling it
+                            pipes.remove(fd)
+                            poller.unregister(fd)
+                            os.close(fd)
+                        else:
+                            handler = getattr(self, '_handle_%s' % name)
+                            handler(data)
+                else:  # kqueue
+                    for event in events:
+                        if event.ident == self._control_r:
+                            draining = True
+                            pipes.remove(self._control_r)
+                            os.close(self._control_r)
+                            continue
+                        name = names[fd]
+                        data = os.read(fd, 1024)
+                        if not data:
+                            # pipe closed, stop polling it
+                            pipes.remove(fd)
+                            os.close(fd)
+                        else:
+                            handler = getattr(self, '_handle_%s' % name)
+                            handler(data)
+
                 if not pipes:
                     # pipes closed, we are done
                     break
+
             # stop flush thread
             flush_queue.put('stop')
             flush_thread.join()
+
+            # cleanup kqueue if needed
+            if kq:
+                kq.close()
+
             # cleanup pipes
             [os.close(pipe) for pipe in pipes]
 
