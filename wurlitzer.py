@@ -194,7 +194,7 @@ class Wurlitzer(object):
                     events = poller.poll(int(flush_interval * 1000))
                 else:
                     evlist = [select.kevent(_pipe, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT)
-                              if _pipe = self._control_r
+                              if _pipe == self._control_r
                               else select.kevent(_pipe) for _pipe in pipes]
                     events = kq.control(evlist, 0, int(flush_interval * 1000))
 
