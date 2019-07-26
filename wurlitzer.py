@@ -177,13 +177,15 @@ class Wurlitzer(object):
             draining = False
             flush_interval = 0
 
-            if "poll" in dir(select):
+            if hasattr(select, "poll"):
                 poller = select.poll()
                 for pipe_ in pipes:
                     poller.register(pipe_, select.POLLIN | select.POLLPRI)
                 kq = None
             elif "kqueue" in dir(select):  # for BSD / macOS
                 kq = select.kqueue()
+                events = kq.control([select.kevent(_pipe) for _pipe in pipes],
+                                    0, 0)
                 poller = None
             else:
                 raise NotImplementedError(
@@ -193,10 +195,8 @@ class Wurlitzer(object):
                 if poller:
                     events = poller.poll(int(flush_interval * 1000))
                 else:
-                    evlist = [select.kevent(_pipe, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT)
-                              if _pipe == self._control_r
-                              else select.kevent(_pipe) for _pipe in pipes]
-                    events = kq.control(evlist, 0, int(flush_interval * 1000))
+                    max_events = max(len(pipes), 1)
+                    events = kq.control(None, max_events, int(flush_interval * 1000))
 
                 if events:
                     # found something to read, don't block select until
@@ -238,14 +238,18 @@ class Wurlitzer(object):
                         if event.ident == self._control_r:
                             draining = True
                             pipes.remove(self._control_r)
+                            kev = select.kevent(event.ident, flags=select.KQ_EV_DELETE)
+                            kq.control([kev], 0, 0)
                             os.close(self._control_r)
                             continue
-                        name = names[fd]
-                        data = os.read(fd, 1024)
+                        name = names[event.ident]
+                        data = os.read(event.ident, 1024)
                         if not data:
                             # pipe closed, stop polling it
-                            pipes.remove(fd)
-                            os.close(fd)
+                            pipes.remove(event.ident)
+                            kev = select.kevent(event.ident, flags=select.KQ_EV_DELETE)
+                            kq.control([kev], 0, 0)
+                            os.close(event.ident)
                         else:
                             handler = getattr(self, '_handle_%s' % name)
                             handler(data)
