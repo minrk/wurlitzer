@@ -6,7 +6,7 @@ import os
 import platform
 import sys
 import time
-from fcntl import fcntl
+from functools import partial
 from tempfile import TemporaryFile
 from unittest import mock
 
@@ -17,6 +17,7 @@ from wurlitzer import (
     PIPE,
     STDOUT,
     Wurlitzer,
+    _default_encoding,
     c_stderr_p,
     c_stdout_p,
     libc,
@@ -26,15 +27,25 @@ from wurlitzer import (
     sys_pipes_forever,
 )
 
+StringIO = partial(io.StringIO, newline=None)  # universal newlines by default
+
 
 def printf(msg):
     """Call C printf"""
-    libc.printf((msg + '\n').encode('utf8'))
+    libc.printf((msg + '\n').encode(_default_encoding))
 
 
 def printf_err(msg):
     """Cal C fprintf on stderr"""
-    libc.fprintf(c_stderr_p, (msg + '\n').encode('utf8'))
+    libc.fprintf(c_stderr_p, (msg + '\n').encode(_default_encoding))
+
+
+def test_stdout_only():
+    # stdout-only so stderr can still be used for debug
+    with pipes(stdout=PIPE, stderr=None) as (stdout, _):
+        printf(u"Hellø")
+
+    assert stdout.read() == u"Hellø\n"
 
 
 def test_pipes():
@@ -51,13 +62,15 @@ def test_pipe_bytes():
         printf(u"Hellø")
         printf_err(u"Hi, stdérr")
 
-    assert stdout.read() == u"Hellø\n".encode('utf8')
-    assert stderr.read() == u"Hi, stdérr\n".encode('utf8')
+    LF = '\nnewline=None'
+
+    assert stdout.read() == f"Hellø{os.linesep}".encode(_default_encoding)
+    assert stderr.read() == f"Hi, stdérr{os.linesep}".encode(_default_encoding)
 
 
 def test_forward():
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+    stdout = StringIO()
+    stderr = StringIO()
     with pipes(stdout=stdout, stderr=stderr) as (_stdout, _stderr):
         printf(u"Hellø")
         printf_err(u"Hi, stdérr")
@@ -69,7 +82,7 @@ def test_forward():
 
 
 def test_pipes_stderr():
-    stdout = io.StringIO()
+    stdout = StringIO()
     with pipes(stdout=stdout, stderr=STDOUT) as (_stdout, _stderr):
         printf(u"Hellø")
         libc.fflush(c_stdout_p)
@@ -82,7 +95,7 @@ def test_pipes_stderr():
 
 
 def test_flush():
-    stdout = io.StringIO()
+    stdout = StringIO()
     w = Wurlitzer(stdout=stdout, stderr=STDOUT)
     with w:
         printf_err(u"Hellø")
@@ -91,8 +104,8 @@ def test_flush():
 
 
 def test_sys_pipes():
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+    stdout = StringIO()
+    stderr = StringIO()
     with mock.patch('sys.stdout', stdout), mock.patch(
         'sys.stderr', stderr
     ), sys_pipes():
@@ -104,8 +117,8 @@ def test_sys_pipes():
 
 
 def test_redirect_everything():
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+    stdout = StringIO()
+    stderr = StringIO()
     with mock.patch('sys.stdout', stdout), mock.patch('sys.stderr', stderr):
         sys_pipes_forever()
         printf(u"Hellø")
@@ -139,7 +152,7 @@ def test_fd_leak():
 
 
 def test_buffer_full():
-    with pipes(stdout=None, stderr=io.StringIO()) as (stdout, stderr):
+    with pipes(stdout=None, stderr=StringIO()) as (stdout, stderr):
         long_string = "x" * 100000  # create a long string (longer than 65536)
         printf_err(long_string)
 
@@ -168,6 +181,8 @@ def test_pipe_max_size():
     wurlitzer._get_max_pipe_size() is None, reason="requires _get_max_pipe_size"
 )
 def test_bufsize():
+    from fcntl import fcntl
+
     default_bufsize = wurlitzer._get_max_pipe_size()
     with wurlitzer.pipes() as (stdout, stderr):
         assert fcntl(sys.__stdout__, wurlitzer.F_GETPIPE_SZ) == default_bufsize

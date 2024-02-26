@@ -37,7 +37,7 @@ setup_args = dict(
     long_description_content_type="text/markdown",
     url="https://github.com/minrk/wurlitzer",
     py_modules=["wurlitzer"],
-    python_requires=">=3.5",
+    python_requires=">=3.6",
     license="MIT",
     cmdclass={
         "bdist_egg": bdist_egg if "bdist_egg" in sys.argv else bdist_egg_disabled
