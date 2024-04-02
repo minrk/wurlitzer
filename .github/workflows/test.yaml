@@ -17,15 +17,16 @@ jobs:
         os:
           - ubuntu-20.04
         python:
-          - "3.5"
           - "3.6"
-          - "3.7"
-          - "3.8"
-          - "3.9"
+          # - "3.7"
+          # - "3.8"
+          # - "3.9"
           - "3.10"
         include:
           - os: macos-latest
-            python: 3.8
+            python: "3.8"
+          - os: windows-latest
+            python: "3.9"
 
     steps:
       - uses: actions/checkout@v2

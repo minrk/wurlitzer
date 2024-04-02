@@ -28,18 +28,47 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager
-from fcntl import F_GETFL, F_SETFL, fcntl
-from functools import lru_cache
-from queue import Queue
+from functools import lru_cache, partial
+from queue import Empty, Queue
 
-try:
-    from fcntl import F_GETPIPE_SZ, F_SETPIPE_SZ
-except ImportError:
-    # ref: linux uapi/linux/fcntl.h
-    F_SETPIPE_SZ = 1024 + 7
-    F_GETPIPE_SZ = 1024 + 8
+if os.name != 'nt':
+    from fcntl import F_GETFL, F_SETFL, fcntl
 
-libc = ctypes.CDLL(None)
+    try:
+        from fcntl import F_GETPIPE_SZ, F_SETPIPE_SZ
+    except ImportError:
+        # ref: linux uapi/linux/fcntl.h
+        F_SETPIPE_SZ = 1024 + 7
+        F_GETPIPE_SZ = 1024 + 8
+
+
+# Windows support adapted from
+# https://github.com/chrisjbillington/zprocess@89b464c3a2d10cb3282bea625670f807430adf03
+# MIT License
+
+
+def _get_streams_windows():
+    """Get file pointer for C stream"""
+
+    class FILE(ctypes.Structure):
+        """FILE struct for Windows"""
+
+        _fields_ = [
+            ("_ptr", ctypes.c_char_p),
+            ("_cnt", ctypes.c_int),
+            ("_base", ctypes.c_char_p),
+            ("_flag", ctypes.c_int),
+            ("_file", ctypes.c_int),
+            ("_charbuf", ctypes.c_int),
+            ("_bufsize", ctypes.c_int),
+            ("_tmpfname", ctypes.c_char_p),
+        ]
+
+    iob_func = libc.__iob_func
+    iob_func.restype = ctypes.POINTER(FILE)
+    iob_func.argtypes = []
+    streams = iob_func()
+    return (ctypes.c_void_p(ctypes.addressof(streams[i])) for i in (1, 2))
 
 
 def _get_streams_cffi():
@@ -81,17 +110,28 @@ def _get_streams_cffi():
 
 
 c_stdout_p = c_stderr_p = None
-try:
-    c_stdout_p = ctypes.c_void_p.in_dll(libc, 'stdout')
-    c_stderr_p = ctypes.c_void_p.in_dll(libc, 'stderr')
-except ValueError:
-    # libc.stdout has a funny name on macOS
+if os.name == "nt":
+    libc = ctypes.cdll.msvcrt
+    c_stdout_p, c_stderr_p = _get_streams_windows()
+else:
+    libc = ctypes.CDLL(None)
     try:
-        c_stdout_p = ctypes.c_void_p.in_dll(libc, '__stdoutp')
-        c_stderr_p = ctypes.c_void_p.in_dll(libc, '__stderrp')
+        c_stdout_p = ctypes.c_void_p.in_dll(libc, 'stdout')
+        c_stderr_p = ctypes.c_void_p.in_dll(libc, 'stderr')
     except ValueError:
-        c_stdout_p, c_stderr_p = _get_streams_cffi()
+        # libc.stdout has a funny name on macOS
+        try:
+            c_stdout_p = ctypes.c_void_p.in_dll(libc, '__stdoutp')
+            c_stderr_p = ctypes.c_void_p.in_dll(libc, '__stderrp')
+        except ValueError:
+            c_stdout_p, c_stderr_p = _get_streams_cffi()
 
+libc.setvbuf.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.c_int,
+    ctypes.c_size_t,
+]
 
 STDOUT = 2
 PIPE = 3
@@ -117,6 +157,45 @@ def dup2(a, b, timeout=3):
                 raise
     if dup_err:
         raise dup_err
+
+
+def _unbuffer(c_stream_p):
+    """Set C output streams to unbuffered
+
+    From chrisjbillington/zprocess (MIT License)
+    """
+    if os.name == 'nt':
+        _IONBF = 4
+    else:
+        _IONBF = 2
+    libc.setvbuf(c_stream_p, None, _IONBF, 0)
+
+
+def _nonblocking(fd):
+    # Windows impl adapted from https://stackoverflow.com/questions/34504970/non-blocking-read-on-os-pipe-on-windows
+    if os.name == 'nt':
+        import msvcrt
+        from ctypes import POINTER, WinError, byref, windll
+        from ctypes.wintypes import BOOL, DWORD, HANDLE
+
+        LPDWORD = POINTER(DWORD)
+
+        PIPE_NOWAIT = DWORD(1)
+        SetNamedPipeHandleState = windll.kernel32.SetNamedPipeHandleState
+        SetNamedPipeHandleState.argtypes = [HANDLE, LPDWORD, LPDWORD, LPDWORD]
+        SetNamedPipeHandleState.restype = BOOL
+
+        h = msvcrt.get_osfhandle(fd)
+
+        res = windll.kernel32.SetNamedPipeHandleState(h, byref(PIPE_NOWAIT), None, None)
+        if res == 0:
+            print(WinError())
+    else:
+        flags = fcntl(fd, F_GETFL)
+        fcntl(fd, F_SETFL, flags | os.O_NONBLOCK)
+
+
+_WIN_ERROR_NO_DATA = 232
 
 
 @lru_cache()
@@ -202,10 +281,13 @@ class Wurlitzer:
         real_fd = getattr(sys, '__%s__' % name).fileno()
         save_fd = os.dup(real_fd)
         self._save_fds[name] = save_fd
+        c_stream_p = globals()["c_{}_p".format(name)]
+        if c_stream_p is not None:
+            _unbuffer(c_stream_p)
 
         pipe_out, pipe_in = os.pipe()
         # set max pipe buffer size (linux only)
-        if self._bufsize:
+        if os.name != 'nt' and self._bufsize:
             try:
                 fcntl(pipe_in, F_SETPIPE_SZ, self._bufsize)
             except OSError as error:
@@ -218,8 +300,7 @@ class Wurlitzer:
         self._real_fds[name] = real_fd
 
         # make pipe_out non-blocking
-        flags = fcntl(pipe_out, F_GETFL)
-        fcntl(pipe_out, F_SETFL, flags | os.O_NONBLOCK)
+        _nonblocking(pipe_out)
         return pipe_out
 
     def _decode(self, data):
@@ -254,13 +335,48 @@ class Wurlitzer:
         if self._stderr and sys.stderr:
             sys.stderr.flush()
 
-        if c_stdout_p is not None:
-            libc.fflush(c_stdout_p)
+        if os.name == "nt":
+            # In windows we flush all output streams
+            # by calling flush on a NULL pointer
+            libc.fflush(ctypes.c_void_p())
+        else:
+            if c_stdout_p is not None:
+                libc.fflush(c_stdout_p)
 
-        if c_stderr_p is not None:
-            libc.fflush(c_stderr_p)
+            if c_stderr_p is not None:
+                libc.fflush(c_stderr_p)
+
+    def _set_thread_priority(self):
+        """Set thread priority
+
+        no-op except on Windows
+
+        Adapted from zprocess (MIT License)
+        """
+        if os.name == 'nt':
+            w32 = ctypes.windll.kernel32
+            THREAD_SET_INFORMATION = 0x20
+            THREAD_PRIORITY_ABOVE_NORMAL = 1
+            handle = w32.OpenThread(
+                THREAD_SET_INFORMATION, False, threading.current_thread().ident
+            )
+            result = w32.SetThreadPriority(handle, THREAD_PRIORITY_ABOVE_NORMAL)
+            w32.CloseHandle(handle)
+            if not result:
+                print(
+                    "Failed to set priority of thread:",
+                    w32.GetLastError(),
+                    file=sys.__stderr__,
+                )
 
     def __enter__(self):
+        return self.start()
+
+    def start(self):
+        """Start capturing output
+
+        Typically used via context manager
+        """
         # flush anything out before starting
         self._flush()
         # setup handle
@@ -268,8 +384,9 @@ class Wurlitzer:
         self._control_r, self._control_w = os.pipe()
 
         # create pipe for stdout
-        pipes = [self._control_r]
-        names = {self._control_r: 'control'}
+        draining = False
+        names = {}
+        pipes = []
         if self._stdout:
             pipe = self._setup_pipe('stdout')
             pipes.append(pipe)
@@ -284,92 +401,142 @@ class Wurlitzer:
         flush_queue = Queue()
 
         def flush_main():
+            self._set_thread_priority()
+            msg = ''
             while True:
-                msg = flush_queue.get()
+                try:
+                    msg = flush_queue.get(timeout=self.flush_interval)
+                except Empty:
+                    # flush every flush_interval,
+                    # even if we get no input
+                    pass
+                self._flush()
                 if msg == 'stop':
                     return
-                self._flush()
 
         flush_thread = threading.Thread(target=flush_main)
         flush_thread.daemon = True
         flush_thread.start()
 
-        def forwarder():
+        # run one thread per pipe
+        # because Windows can only do blocking reads on pipes
+        # Windows can't select on pipes,
+        # and even ProactorEventLoop.connect_read_pipe doesn't actually support pipes.
+
+        def pipe_forwarder(fd, name, handler):
             """Forward bytes on a pipe to stream messages"""
-            draining = False
-            flush_interval = 0
-            poller = selectors.DefaultSelector()
+            self._set_thread_priority()
+            if os.name == 'nt':
+                # can't poll on Windows, sleep instead
+                # this shouldn't come up because reads are always blocking
+                def poll():
+                    time.sleep(self.flush_interval)
 
-            for pipe_ in pipes:
-                poller.register(pipe_, selectors.EVENT_READ)
+            else:
+                poller = selectors.DefaultSelector()
+                poller.register(fd, selectors.EVENT_READ)
 
-            while pipes:
-                events = poller.select(flush_interval)
-                if events:
-                    # found something to read, don't block select until
-                    # we run out of things to read
-                    flush_interval = 0
-                else:
-                    # nothing to read
-                    if draining:
-                        # if we are draining and there's nothing to read, stop
-                        break
-                    else:
-                        # nothing to read, get ready to wait.
-                        # flush the streams in case there's something waiting
-                        # to be written.
-                        flush_queue.put('flush')
-                        flush_interval = self.flush_interval
-                        continue
+                def poll():
+                    poller.select(self.flush_interval)
 
-                for selector_key, flags in events:
-                    fd = selector_key.fd
-                    if fd == self._control_r:
-                        draining = True
-                        pipes.remove(self._control_r)
-                        poller.unregister(self._control_r)
-                        os.close(self._control_r)
-                        continue
-                    name = names[fd]
+            while True:
+                try:
                     data = os.read(fd, 1024)
-                    if not data:
-                        # pipe closed, stop polling it
-                        pipes.remove(fd)
-                        poller.unregister(fd)
-                        os.close(fd)
+                except OSError as e:
+                    if os.name == 'nt':
+                        w32 = ctypes.windll.kernel32
+                        no_data = (
+                            e.errno == errno.EINVAL
+                            and w32.GetLastError() == _WIN_ERROR_NO_DATA
+                        )
                     else:
-                        handler = getattr(self, '_handle_%s' % name)
-                        handler(data)
-                if not pipes:
-                    # pipes closed, we are done
+                        no_data = e.errno == errno.EAGAIN
+                    if no_data:
+                        if draining:
+                            break
+                        else:
+                            poll()
+                            continue
+                    else:
+                        raise
+                if not data:
                     break
+                else:
+                    try:
+                        handler(data)
+                    except Exception as e:
+                        # FIXME: this would produce an infinite loop on stderr
+                        if name != 'stderr':
+                            print(
+                                "Error handling pipe bytes: {}".format(e),
+                                file=sys.__stderr__,
+                            )
+                        break
+            if os.name != 'nt':
+                poller.close()
+            # done reading, close pipe
+            os.close(fd)
+
+        def forwarder_control():
+            self._set_thread_priority()
+            nonlocal draining
+            pipe_threads = []
+            for fd in pipes:
+                name = names[fd]
+                handler = handler = getattr(self, '_handle_%s' % name)
+                pipe_thread = threading.Thread(
+                    target=pipe_forwarder, args=(fd, name, handler)
+                )
+                pipe_thread.daemon = True
+                pipe_thread.start()
+                pipe_threads.append(pipe_thread)
+
+            msg = os.read(self._control_r, 1)
+            os.close(self._control_r)
+
             # stop flush thread
             flush_queue.put('stop')
-            flush_thread.join()
-            # cleanup pipes
-            [os.close(pipe) for pipe in pipes]
-            poller.close()
+            flush_thread.join(timeout=10)
+            draining = True
 
-        self.thread = threading.Thread(target=forwarder)
+            # stop pipe threads
+            for pipe_thread in pipe_threads:
+                pipe_thread.join(timeout=10)
+                if pipe_thread.is_alive():
+                    print("Pipe still alive!", pipe_thread, file=sys.__stderr__)
+
+        self.thread = threading.Thread(target=forwarder_control)
         self.thread.daemon = True
         self.thread.start()
 
         return self.handle
 
     def __exit__(self, exc_type, exc_value, traceback):
+        self.stop()
+
+    def stop(self):
+        """Stop capturing output"""
         # flush before exiting
         self._flush()
 
-        # signal output is complete on control pipe
+        # restore original state, close pipes
+        # forwarder thread will finish when it reaches EOF
+
+        # signal output is complete on control channel
         os.write(self._control_w, b'\1')
-        self.thread.join()
         os.close(self._control_w)
 
-        # restore original state
+        # finally, wait for thread to finish
+        self.thread.join(timeout=10)
+
         for name, real_fd in self._real_fds.items():
             save_fd = self._save_fds[name]
             dup2(save_fd, real_fd)
             os.close(save_fd)
+
+        if self.thread.is_alive():
+            print("Wurlitzer thread failed to complete!", file=sys.__stderr__)
+
         # finalize handle
         self._finish_handle()
 
@@ -397,7 +564,7 @@ def pipes(stdout=PIPE, stderr=PIPE, encoding=_default_encoding, bufsize=None):
     """
     stdout_pipe = stderr_pipe = False
     if encoding:
-        PipeIO = io.StringIO
+        PipeIO = partial(io.StringIO, newline=None)
     else:
         PipeIO = io.BytesIO
     # setup stdout
