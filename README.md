@@ -21,7 +21,7 @@ with pipes() as (out, err):
 stdout = out.read()
 ```
 
-Capture stdout/stderr in StringIO:
+Capture stdout/stderr in StringIO and forward C-level stderr to Python sys.stdout:
 
 ```python
 from io import StringIO
