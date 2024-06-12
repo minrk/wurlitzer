@@ -1,6 +1,3 @@
-# coding: utf-8
-from __future__ import print_function
-
 import io
 import logging
 import os
@@ -40,55 +37,55 @@ def printf_err(msg):
 
 def test_pipes():
     with pipes(stdout=PIPE, stderr=PIPE) as (stdout, stderr):
-        printf(u"Hellø")
-        printf_err(u"Hi, stdérr")
+        printf("Hellø")
+        printf_err("Hi, stdérr")
 
-    assert stdout.read() == u"Hellø\n"
-    assert stderr.read() == u"Hi, stdérr\n"
+    assert stdout.read() == "Hellø\n"
+    assert stderr.read() == "Hi, stdérr\n"
 
 
 def test_pipe_bytes():
     with pipes(encoding=None) as (stdout, stderr):
-        printf(u"Hellø")
-        printf_err(u"Hi, stdérr")
+        printf("Hellø")
+        printf_err("Hi, stdérr")
 
-    assert stdout.read() == u"Hellø\n".encode('utf8')
-    assert stderr.read() == u"Hi, stdérr\n".encode('utf8')
+    assert stdout.read() == "Hellø\n".encode()
+    assert stderr.read() == "Hi, stdérr\n".encode()
 
 
 def test_forward():
     stdout = io.StringIO()
     stderr = io.StringIO()
     with pipes(stdout=stdout, stderr=stderr) as (_stdout, _stderr):
-        printf(u"Hellø")
-        printf_err(u"Hi, stdérr")
+        printf("Hellø")
+        printf_err("Hi, stdérr")
         assert _stdout is stdout
         assert _stderr is stderr
 
-    assert stdout.getvalue() == u"Hellø\n"
-    assert stderr.getvalue() == u"Hi, stdérr\n"
+    assert stdout.getvalue() == "Hellø\n"
+    assert stderr.getvalue() == "Hi, stdérr\n"
 
 
 def test_pipes_stderr():
     stdout = io.StringIO()
     with pipes(stdout=stdout, stderr=STDOUT) as (_stdout, _stderr):
-        printf(u"Hellø")
+        printf("Hellø")
         libc.fflush(c_stdout_p)
         time.sleep(0.1)
-        printf_err(u"Hi, stdérr")
+        printf_err("Hi, stdérr")
         assert _stdout is stdout
         assert _stderr is None
 
-    assert stdout.getvalue() == u"Hellø\nHi, stdérr\n"
+    assert stdout.getvalue() == "Hellø\nHi, stdérr\n"
 
 
 def test_flush():
     stdout = io.StringIO()
     w = Wurlitzer(stdout=stdout, stderr=STDOUT)
     with w:
-        printf_err(u"Hellø")
+        printf_err("Hellø")
         time.sleep(0.5)
-        assert stdout.getvalue().strip() == u"Hellø"
+        assert stdout.getvalue().strip() == "Hellø"
 
 
 def test_sys_pipes():
@@ -97,11 +94,11 @@ def test_sys_pipes():
     with mock.patch('sys.stdout', stdout), mock.patch(
         'sys.stderr', stderr
     ), sys_pipes():
-        printf(u"Hellø")
-        printf_err(u"Hi, stdérr")
+        printf("Hellø")
+        printf_err("Hi, stdérr")
 
-    assert stdout.getvalue() == u"Hellø\n"
-    assert stderr.getvalue() == u"Hi, stdérr\n"
+    assert stdout.getvalue() == "Hellø\n"
+    assert stderr.getvalue() == "Hi, stdérr\n"
 
 
 def test_sys_pipes_check():
@@ -119,16 +116,16 @@ def test_redirect_everything():
     stderr = io.StringIO()
     with mock.patch('sys.stdout', stdout), mock.patch('sys.stderr', stderr):
         sys_pipes_forever()
-        printf(u"Hellø")
-        printf_err(u"Hi, stdérr")
+        printf("Hellø")
+        printf_err("Hi, stdérr")
         stop_sys_pipes()
-    assert stdout.getvalue() == u"Hellø\n"
-    assert stderr.getvalue() == u"Hi, stdérr\n"
+    assert stdout.getvalue() == "Hellø\n"
+    assert stderr.getvalue() == "Hi, stdérr\n"
 
 
 def count_fds():
     """utility for counting file descriptors"""
-    proc_fds = '/proc/{}/fd'.format(os.getpid())
+    proc_fds = f'/proc/{os.getpid()}/fd'
     if os.path.isdir(proc_fds):
         return len(proc_fds)
     else:

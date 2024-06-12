@@ -3,7 +3,6 @@
 Use `wurlitzer.pipes` or `wurlitzer.sys_pipes` as context managers.
 """
 
-from __future__ import print_function
 
 __version__ = '3.2.0.dev'
 
@@ -120,7 +119,7 @@ def dup2(a, b, timeout=3):
         raise dup_err
 
 
-@lru_cache()
+@lru_cache
 def _get_max_pipe_size():
     """Get max pipe size
 
@@ -139,7 +138,7 @@ def _get_max_pipe_size():
     # If Linux procfs (or something that looks like it) exposes its
     # maximum F_SETPIPE_SZ, adjust the default buffer sizes.
     try:
-        with open('/proc/sys/fs/pipe-max-size', 'r') as f:
+        with open('/proc/sys/fs/pipe-max-size') as f:
             # Figure out OS max pipe size
             pipe_max_size = int(f.read())
     except Exception:
@@ -540,7 +539,7 @@ def sys_pipes(encoding=_default_encoding, bufsize=None):
     # check that we aren't forwarding stdout to itself
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name)
-        capture_stream = getattr(sys, "__{}__".format(name))
+        capture_stream = getattr(sys, f"__{name}__")
         try:
             fd = stream.fileno()
             capture_fd = capture_stream.fileno()
