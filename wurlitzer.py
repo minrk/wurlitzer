@@ -3,7 +3,6 @@
 Use `wurlitzer.pipes` or `wurlitzer.sys_pipes` as context managers.
 """
 
-
 __version__ = '3.2.0.dev'
 
 __all__ = [
