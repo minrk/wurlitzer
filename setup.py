@@ -36,6 +36,8 @@ setup_args = dict(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/minrk/wurlitzer",
+    packages=["wurlitzer-stubs"],
+    package_data={"wurlitzer-stubs": ["__init__.pyi"]},
     py_modules=["wurlitzer"],
     python_requires=">=3.5",
     license="MIT",
