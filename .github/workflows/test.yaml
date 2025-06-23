@@ -60,3 +60,38 @@ jobs:
       - name: Submit codecov report
         run: |
           codecov
+
+  stubtest:
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Keep running even if one variation of the job fail
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Python 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+
+      # preserve pip cache to speed up installation
+      - name: Cache pip
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pip
+          # Look to see if there is a cache hit for the corresponding requirements file
+          key: ${{ runner.os }}-pip-${{ hashFiles('*requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade --pre -r dev-requirements.txt .
+          pip freeze
+
+      - name: Run stubtests and mypy
+        run: |
+          python -m mypy.stubtest wurlitzer
+          python -m mypy wurlitzer.py

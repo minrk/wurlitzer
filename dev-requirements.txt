@@ -1,4 +1,6 @@
 codecov
 mock # python_version < '3.0'
+mypy
 pytest>=2.8
 pytest-cov
+types-cffi
