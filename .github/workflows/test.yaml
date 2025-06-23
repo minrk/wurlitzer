@@ -91,6 +91,7 @@ jobs:
           pip install --upgrade --pre -r dev-requirements.txt .
           pip freeze
 
-      - name: Run stubtests
+      - name: Run stubtests and mypy
         run: |
           python -m mypy.stubtest wurlitzer
+          python -m mypy wurlitzer.py
